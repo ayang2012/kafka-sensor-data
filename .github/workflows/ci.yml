@@ -112,4 +112,4 @@ jobs:
           AWS_SECRET_ACCESS_KEY: test
 
       - name: Run integration tests
-        run: pytest tests/integration/ -v --tb=short
+        run: pytest tests/integration/ -v --tb=short --integration
