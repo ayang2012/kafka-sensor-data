@@ -43,7 +43,7 @@ def run():
         "enable.idempotence": True,
     })
 
-    client = mqtt.Client(client_id="mqtt-kafka-bridge", userdata=producer)
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="mqtt-kafka-bridge", userdata=producer)
     client.on_message = _on_message
     client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
     client.subscribe(f"{MQTT_TOPIC_PREFIX}/+/data", qos=1)

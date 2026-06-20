@@ -53,7 +53,7 @@ def run():
     profiles = load_profiles(PROFILES_PATH)
     logger.info("Loaded %d sensor profiles", len(profiles))
 
-    client = mqtt.Client(client_id="sensor-simulator")
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="sensor-simulator")
     client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
     client.loop_start()
 

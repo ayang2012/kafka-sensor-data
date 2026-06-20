@@ -50,7 +50,7 @@ class TestBridgeToKafka:
         }
 
         # publish to MQTT (bridge should forward to Kafka)
-        pub = mqtt.Client(client_id=f"test-pub-{reading_id[:8]}")
+        pub = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"test-pub-{reading_id[:8]}")
         pub.connect(MQTT_HOST, MQTT_PORT)
         pub.publish(f"sensors/9999/data", json.dumps(payload), qos=1)
         pub.disconnect()
@@ -90,7 +90,7 @@ class TestBridgeToKafka:
             "sensor_type": "test",
         }
 
-        pub = mqtt.Client(client_id=f"test-key-{reading_id[:8]}")
+        pub = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"test-key-{reading_id[:8]}")
         pub.connect(MQTT_HOST, MQTT_PORT)
         pub.publish("sensors/8888/data", json.dumps(payload), qos=1)
         pub.disconnect()

@@ -28,7 +28,7 @@ def _broker_available() -> bool:
 def mqtt_client():
     if not _broker_available():
         pytest.skip("MQTT broker not available")
-    client = mqtt.Client(client_id="test-client")
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="test-client")
     client.connect(MQTT_HOST, MQTT_PORT, keepalive=10)
     client.loop_start()
     yield client
