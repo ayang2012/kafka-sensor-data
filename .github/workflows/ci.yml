@@ -45,11 +45,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
-      mosquitto:
-        image: eclipse-mosquitto:2.0
-        ports: ["1883:1883"]
-        volumes:
-          - ${{ github.workspace }}/mosquitto:/mosquitto/config
       localstack:
         image: localstack/localstack:3.4
         env:
@@ -78,8 +73,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
+
+      # Mosquitto must start after checkout so the config file exists on disk
+      - name: Start Mosquitto
+        run: |
+          docker run -d --name mosquitto -p 1883:1883 \
+            -v ${{ github.workspace }}/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf \
+            eclipse-mosquitto:2.0
+
+      - name: Wait for Mosquitto
+        run: |
+          for i in $(seq 1 15); do
+            nc -z localhost 1883 && echo "Mosquitto ready" && break
+            echo "Waiting for Mosquitto ($i/15)..."
+            sleep 2
+          done
+
+      - name: Start bridge (MQTT→Kafka)
+        run: python -m sensor_pipeline bridge &
+        env:
+          MQTT_HOST: localhost
+          MQTT_PORT: "1883"
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+          KAFKA_TOPIC: sensor-readings
+
+      - name: Wait for bridge to connect
+        run: sleep 5
+
       - name: Create S3 bucket in LocalStack
         run: |
           aws --endpoint-url=http://localhost:4566 s3 mb s3://sensor-readings-bronze \
@@ -87,5 +110,6 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: test
           AWS_SECRET_ACCESS_KEY: test
+
       - name: Run integration tests
         run: pytest tests/integration/ -v --tb=short
