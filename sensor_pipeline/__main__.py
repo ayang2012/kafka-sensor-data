@@ -8,8 +8,8 @@ def main():
     parser = argparse.ArgumentParser(description="Sensor Community Kafka pipeline")
     parser.add_argument(
         "mode",
-        choices=["bootstrap", "simulate", "bridge", "consume"],
-        help="bootstrap: seed profiles | simulate: emit MQTT | bridge: MQTT→Kafka | consume: Kafka→S3",
+        choices=["bootstrap", "simulate", "produce", "consume"],
+        help="bootstrap: seed profiles | simulate: emit MQTT | produce: MQTT→Kafka | consume: Kafka→S3",
     )
     args = parser.parse_args()
 
@@ -19,8 +19,8 @@ def main():
     elif args.mode == "simulate":
         from sensor_pipeline.simulator import run
         run()
-    elif args.mode == "bridge":
-        from sensor_pipeline.bridge import run
+    elif args.mode == "produce":
+        from sensor_pipeline.producer import run
         run()
     elif args.mode == "consume":
         from sensor_pipeline.consumer import run

@@ -1,42 +1,57 @@
 import json
 import logging
 import os
-import time
+import threading
 
+import paho.mqtt.client as mqtt
 from confluent_kafka import Producer
-
-from .fetch import fetch_by_country
 
 logger = logging.getLogger(__name__)
 
+MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+MQTT_TOPIC_PREFIX = os.getenv("MQTT_TOPIC_PREFIX", "sensors")
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-TOPIC = os.getenv("KAFKA_TOPIC", "sensor-readings")
-COUNTRY = os.getenv("SENSOR_COUNTRY", "DE")
-POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "300"))  # 5 min default
+KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "sensor-readings")
+
+_stop_event = threading.Event()
 
 
 def _delivery_report(err, msg):
     if err:
-        logger.error("Delivery failed for key %s: %s", msg.key(), err)
+        logger.error("Kafka delivery failed key=%s err=%s", msg.key(), err)
+
+
+def _on_message(client, producer, msg):
+    try:
+        payload = json.loads(msg.payload.decode())
+        key = str(payload.get("sensor_id", "")).encode()
+        producer.produce(
+            KAFKA_TOPIC,
+            key=key,
+            value=msg.payload,
+            callback=_delivery_report,
+        )
+        producer.poll(0)
+    except Exception:
+        logger.exception("Failed to forward MQTT message to Kafka")
 
 
 def run():
-    producer = Producer({"bootstrap.servers": KAFKA_BOOTSTRAP})
-    logger.info("Producer started. topic=%s country=%s", TOPIC, COUNTRY)
+    producer = Producer({
+        "bootstrap.servers": KAFKA_BOOTSTRAP,
+        "enable.idempotence": True,
+    })
 
-    while True:
-        try:
-            readings = fetch_by_country(COUNTRY)
-            logger.info("Fetched %d readings", len(readings))
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="mqtt-kafka-bridge", userdata=producer)
+    client.on_message = _on_message
+    client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
+    client.subscribe(f"{MQTT_TOPIC_PREFIX}/+/data", qos=1)
 
-            for reading in readings:
-                key = str(reading.get("id", "")).encode()
-                value = json.dumps(reading).encode()
-                producer.produce(TOPIC, key=key, value=value, callback=_delivery_report)
+    logger.info("Bridge running: MQTT %s:%s → Kafka %s", MQTT_HOST, MQTT_PORT, KAFKA_TOPIC)
 
-            producer.flush()
-            logger.info("Flushed %d messages to Kafka", len(readings))
-        except Exception as exc:
-            logger.exception("Fetch/produce cycle failed: %s", exc)
-
-        time.sleep(POLL_INTERVAL)
+    try:
+        client.loop_forever()
+    finally:
+        producer.flush()
+        client.disconnect()

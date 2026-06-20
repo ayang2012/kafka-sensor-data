@@ -92,15 +92,15 @@ jobs:
             sleep 2
           done
 
-      - name: Start bridge (MQTT→Kafka)
-        run: python -m sensor_pipeline bridge &
+      - name: Start producer (MQTT→Kafka)
+        run: python -m sensor_pipeline produce &
         env:
           MQTT_HOST: localhost
           MQTT_PORT: "1883"
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
           KAFKA_TOPIC: sensor-readings
 
-      - name: Wait for bridge to connect
+      - name: Wait for producer to connect
         run: sleep 5
 
       - name: Create S3 bucket in LocalStack

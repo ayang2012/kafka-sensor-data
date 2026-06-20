@@ -16,7 +16,7 @@ A simulated IoT data pipeline that ingests air quality sensor readings from [Sen
      ▼  MQTT publish  sensors/{sensor_id}/data
 [Mosquitto MQTT Broker]        ← IoT Gateway
      ▼  MQTT subscribe
-[bridge.py]
+[producer.py]
      │  forwards every MQTT message to Kafka (idempotent producer)
      ▼  Kafka produce  sensor-readings topic
 [Kafka]
@@ -72,7 +72,7 @@ This fetches a snapshot from Sensor.Community and pickles 1,000 sensor profiles 
 
 ```bash
 python -m sensor_pipeline simulate &   # emit sensor readings via MQTT
-python -m sensor_pipeline bridge &     # forward MQTT → Kafka
+python -m sensor_pipeline produce &    # forward MQTT → Kafka
 python -m sensor_pipeline consume &    # write Kafka → S3 Parquet
 ```
 
@@ -97,7 +97,7 @@ pytest tests/unit/ -v
 Start docker-compose and the bridge first (steps 3–5 above), then:
 
 ```bash
-python -m sensor_pipeline bridge &
+python -m sensor_pipeline produce &
 pytest tests/integration/ --integration -v
 ```
 
@@ -114,7 +114,7 @@ kafka-sensor-data/
 ├── sensor_pipeline/
 │   ├── bootstrap.py     # fetch Sensor.Community snapshot, seed profiles
 │   ├── simulator.py     # async IoT device simulator (MQTT publisher)
-│   ├── bridge.py        # MQTT → Kafka bridge
+│   ├── producer.py      # MQTT → Kafka producer
 │   ├── consumer.py      # Kafka → S3 Parquet writer
 │   └── fetch.py         # Sensor.Community API client
 ├── tests/

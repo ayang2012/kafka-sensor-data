@@ -2,7 +2,7 @@ import json
 import pytest
 from unittest.mock import MagicMock, patch, call
 
-from sensor_pipeline.bridge import _on_message
+from sensor_pipeline.producer import _on_message
 
 
 def _make_mqtt_msg(payload: dict) -> MagicMock:
