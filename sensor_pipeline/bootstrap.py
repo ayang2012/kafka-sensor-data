@@ -18,7 +18,7 @@ def _validate_profile(p: dict) -> bool:
         lon = float(loc.get("longitude", 0))
         has_values = bool(p.get("sensordatavalues"))
         in_bounds = -90 <= lat <= 90 and -180 <= lon <= 180
-        return bool(p.get("id")) and has_values and in_bounds
+        return p.get("id") is not None and has_values and in_bounds
     except (TypeError, ValueError):
         return False
 
