@@ -88,6 +88,10 @@ class TestConsumerToS3:
         # Dedup is dbt silver's job (QUALIFY ROW_NUMBER PARTITION BY
         # reading_id), since only silver can see across every flush batch
         # and file, not just whatever's in one in-memory buffer.
+        keys_before = {
+            o["Key"] for o in s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=S3_PREFIX).get("Contents", [])
+        }
+
         rid = str(uuid.uuid4())
         readings = [
             {**_make_reading(1), "reading_id": rid},
@@ -96,9 +100,13 @@ class TestConsumerToS3:
         count = _flush(readings, s3)
         assert count == 2, "Bronze should not drop duplicate reading_ids"
 
-        resp = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=S3_PREFIX)
-        keys = sorted([o["Key"] for o in resp.get("Contents", []) if o["Key"].endswith(".parquet")])
-        obj = s3.get_object(Bucket=S3_BUCKET, Key=keys[-1])
+        keys_after = {
+            o["Key"] for o in s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=S3_PREFIX).get("Contents", [])
+        }
+        new_keys = [k for k in (keys_after - keys_before) if k.endswith(".parquet")]
+        assert len(new_keys) == 1, "Expected exactly one new file from this test's own flush"
+
+        obj = s3.get_object(Bucket=S3_BUCKET, Key=new_keys[0])
         table = pq.read_table(io.BytesIO(obj["Body"].read()))
 
         ids = table.column("reading_id").to_pylist()
