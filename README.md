@@ -3,6 +3,7 @@
 A production-style IoT data pipeline that ingests real-time air quality sensor readings from [Sensor.Community](https://sensor.community/) and streams them through MQTT → Kafka → S3 → Snowflake, following a medallion (bronze/silver/gold) architecture with a device registry, data quality enforcement, and orchestrated incremental refresh.
 
 ## Architecture
+<img width="936" height="512" alt="image" src="https://github.com/user-attachments/assets/33f30981-684a-4f59-bbb4-008a087205e7" />
 
 ```
 [bootstrap.py]
