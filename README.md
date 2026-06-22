@@ -133,9 +133,9 @@ If you removed the LocalStack env vars to use real AWS, drop `--endpoint-url` an
 
 ## Orchestration: refreshing silver and gold in Snowflake
 
-Bronze landing in S3 doesn't automatically become silver/gold in Snowflake — that refresh is orchestrated separately, two ways:
+Bronze landing in S3 doesn't automatically become silver/gold in Snowflake — that refresh is orchestrated by Airflow.
 
-### Option A — Airflow + dbt (primary)
+### Airflow + dbt
 
 ```bash
 docker-compose -f airflow/docker-compose.yml up -d
@@ -148,14 +148,14 @@ Open `http://localhost:8080` (`admin`/`admin`). The `sensor_pipeline_refresh` DA
 3. `dbt run` — all 3 gold models, in parallel
 4. `dbt test` — 16 data quality checks
 
+On startup, `consumer.py` also backfills any missing `_SUCCESS` markers from the last 48 hours — protects against a consumer restart landing inside a new hour and permanently skipping the previous hour's completion signal (hit this for real; see the architecture doc's Lessons Learned).
+
 Requires `airflow/.env` with `SNOWFLAKE_*` and `AWS_*` credentials (see `airflow/docker-compose.yml` for the full list). Not committed to git.
 
-### Option B — GitHub Actions (lighter-weight interim path)
+### GitHub Actions (manual fallback only — not scheduled)
 
-- `.github/workflows/refresh_pipeline.yml` — scheduled hourly, runs the same dbt models via plain Python scripts (`sql/refresh_silver.py`, `sql/build_gold.py`)
-- `.github/workflows/sync_dims.yml` — manual trigger, syncs Postgres `customers`/`dim_sensors` into Snowflake
-
-GitHub Actions can't reach a local Postgres instance, so dim sync stays a manual, separately-triggered workflow until Postgres is hosted somewhere network-accessible.
+- `.github/workflows/refresh_pipeline.yml` — `workflow_dispatch` only. Originally scheduled hourly as an interim path before Airflow existed; running both on the same cron caused them to race against each other refreshing the same Snowflake tables. Kept as a manual emergency fallback if the Airflow stack is down, not a parallel scheduler.
+- `.github/workflows/sync_dims.yml` — manual trigger, syncs Postgres `customers`/`dim_sensors` into Snowflake. GitHub Actions can't reach a local-only Postgres instance, so this stays manual until Postgres is hosted somewhere network-accessible.
 
 ## Running tests
 
