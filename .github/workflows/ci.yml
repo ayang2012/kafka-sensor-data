@@ -56,6 +56,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: sensor
+          POSTGRES_PASSWORD: sensor
+          POSTGRES_DB: sensordb
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U sensor -d sensordb"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     env:
       MQTT_HOST: localhost
@@ -67,6 +79,7 @@ jobs:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_DEFAULT_REGION: us-east-1
+      POSTGRES_DSN: postgresql://sensor:sensor@localhost:5432/sensordb
 
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +89,19 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Initialize Postgres schema
+        run: |
+          psql "$POSTGRES_DSN" -f sql/init.sql
+
+      - name: Register test sensor IDs
+        run: |
+          psql "$POSTGRES_DSN" -c "
+            INSERT INTO dim_sensors (sensor_id, sensor_type, latitude, longitude, country, region, customer_id)
+            VALUES (9999, 'SDS011', 48.1, 11.5, 'DE', 'Europe', 1),
+                   (8888, 'test', 0.0, 0.0, 'XX', 'Other', 6)
+            ON CONFLICT (sensor_id) DO NOTHING;
+          "
 
       # Mosquitto must start after checkout so the config file exists on disk
       - name: Start Mosquitto
@@ -99,6 +125,7 @@ jobs:
           MQTT_PORT: "1883"
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
           KAFKA_TOPIC: sensor-readings
+          POSTGRES_DSN: postgresql://sensor:sensor@localhost:5432/sensordb
 
       - name: Wait for producer to connect
         run: sleep 5
