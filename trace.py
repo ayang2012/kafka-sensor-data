@@ -1,11 +1,12 @@
 """
-Live three-column pipeline tracer.
+Live four-column pipeline tracer: MQTT, Kafka, S3, and Alerts.
 
 Usage:
     python trace.py
 
-Requires services running (docker-compose up -d zookeeper kafka mosquitto localstack)
-and the producer running (python -m sensor_pipeline produce &).
+Requires services running (docker-compose up -d zookeeper kafka mosquitto
+localstack postgres) and the producer/alert consumer running
+(python -m sensor_pipeline produce & / alert &).
 """
 import json
 import os
@@ -15,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 import paho.mqtt.client as mqtt
+import psycopg2
+import psycopg2.extras
 from confluent_kafka import Consumer
 from rich.layout import Layout
 from rich.live import Live
@@ -31,6 +34,7 @@ KAFKA_GROUP = "tracer-" + str(int(time.time()))
 S3_BUCKET = os.getenv("S3_BUCKET", "sensor-readings-bronze")
 S3_PREFIX = os.getenv("S3_PREFIX", "sensor-readings")
 S3_ENDPOINT = os.getenv("S3_ENDPOINT_URL")
+POSTGRES_DSN = os.getenv("POSTGRES_DSN", "postgresql://sensor:sensor@localhost:5432/sensordb")
 MAX_ROWS = 30
 
 console = Console()
@@ -38,7 +42,8 @@ console = Console()
 mqtt_rows: list[str] = []
 kafka_rows: list[str] = []
 s3_rows: list[str] = []
-counts = {"mqtt": 0, "kafka": 0, "s3_files": 0}
+alert_rows: list[str] = []
+counts = {"mqtt": 0, "kafka": 0, "s3_files": 0, "alerts": 0}
 lock = threading.Lock()
 known_s3_keys: set[str] = set()
 
@@ -182,6 +187,58 @@ def run_s3_watcher():
         time.sleep(5)
 
 
+def run_alert_watcher():
+    """Polls alert_log directly rather than re-deriving alert conditions —
+    that table is the actual source of truth for what fired, including
+    customer context already resolved by producer.py / alert_consumer.py."""
+    try:
+        conn = psycopg2.connect(POSTGRES_DSN)
+    except Exception as e:
+        with lock:
+            _append(alert_rows, f"[red]init error: {e}[/]")
+        return
+
+    last_id = 0
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM alert_log")
+        last_id = cur.fetchone()["max_id"]
+
+    with lock:
+        _append(alert_rows, f"[dim]watching alert_log from id={last_id}...[/]")
+
+    while True:
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, sensor_id, reading_id, alert_type, payload, created_at "
+                    "FROM alert_log WHERE id > %s ORDER BY id ASC",
+                    (last_id,),
+                )
+                rows = cur.fetchall()
+            for row in rows:
+                last_id = row["id"]
+                payload = row["payload"] or {}
+                if row["alert_type"] == "pressure_threshold_exceeded":
+                    pressure = payload.get("pressure", "?")
+                    customer = payload.get("customer_name", "Unknown")
+                    detail = f"pressure={pressure}Pa  customer={customer}"
+                    color = "bold red"
+                else:
+                    detail = f"sensor_type={payload.get('sensor_type', '?')}"
+                    color = "bold magenta"
+                line = (
+                    f"[dim]{_ts()}[/]  [{color}]{row['alert_type']}[/]\n"
+                    f"sensor={row['sensor_id']}  {detail}"
+                )
+                with lock:
+                    _append(alert_rows, line)
+                    counts["alerts"] += 1
+        except Exception as e:
+            with lock:
+                _append(alert_rows, f"[red]error: {e}[/]")
+        time.sleep(3)
+
+
 def make_panel(rows: list[str], title: str, subtitle: str, border: str) -> Panel:
     body = Text.from_markup("\n\n".join(rows)) if rows else Text("waiting...", style="dim")
     return Panel(body, title=title, subtitle=subtitle, border_style=border)
@@ -207,18 +264,25 @@ def build_layout() -> Layout:
             "[dim]bronze / parquet[/]",
             "yellow",
         )
+        alert_p = make_panel(
+            alert_rows,
+            f"[bold red]Alerts[/]  [dim]{counts['alerts']} fired[/]",
+            "[dim]alert_log[/]",
+            "red",
+        )
 
     layout = Layout()
     layout.split_row(
         Layout(mqtt_p, name="mqtt"),
         Layout(kafka_p, name="kafka"),
         Layout(s3_p, name="s3"),
+        Layout(alert_p, name="alerts"),
     )
     return layout
 
 
 def main():
-    for target in (run_mqtt_watcher, run_kafka_watcher, run_s3_watcher):
+    for target in (run_mqtt_watcher, run_kafka_watcher, run_s3_watcher, run_alert_watcher):
         threading.Thread(target=target, daemon=True).start()
 
     console.print("[bold]Pipeline event tracer[/]  [dim]ctrl+c to stop[/]\n")
