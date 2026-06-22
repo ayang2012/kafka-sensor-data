@@ -5,6 +5,10 @@ A production-style IoT data pipeline that ingests real-time air quality sensor r
 ## Architecture
 <img width="936" height="512" alt="image" src="https://github.com/user-attachments/assets/33f30981-684a-4f59-bbb4-008a087205e7" />
 
+https://github.com/user-attachments/assets/74c7dbb8-1d12-449d-a761-8f3bf196b732
+
+https://github.com/user-attachments/assets/c61d9d07-0328-4b41-8b23-c13023e2b831
+
 ```
 [bootstrap.py]
      │  fetches snapshot once from Sensor.Community API
