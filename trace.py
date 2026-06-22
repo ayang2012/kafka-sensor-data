@@ -11,7 +11,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import boto3
 import paho.mqtt.client as mqtt
@@ -29,6 +29,7 @@ KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "sensor-readings")
 KAFKA_GROUP = "tracer-" + str(int(time.time()))
 S3_BUCKET = os.getenv("S3_BUCKET", "sensor-readings-bronze")
+S3_PREFIX = os.getenv("S3_PREFIX", "sensor-readings")
 S3_ENDPOINT = os.getenv("S3_ENDPOINT_URL")
 MAX_ROWS = 30
 
@@ -146,20 +147,35 @@ def run_s3_watcher():
         except Exception:
             pass
 
+    def _hour_prefix(dt: datetime) -> str:
+        return (
+            f"{S3_PREFIX}/"
+            f"year={dt.year}/month={dt.month:02d}/"
+            f"day={dt.day:02d}/hour={dt.hour:02d}/"
+        )
+
     while True:
         try:
-            resp = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix="sensor-readings/")
-            for obj in resp.get("Contents", []):
-                key = obj["Key"]
-                if not key.endswith(".parquet") or key in known_s3_keys:
-                    continue
-                known_s3_keys.add(key)
-                size_kb = round(obj["Size"] / 1024, 1)
-                short_key = "/".join(key.split("/")[-4:])
-                line = f"[dim]{_ts()}[/]  [bold yellow]new file[/]\n{short_key}\n{size_kb} KB"
-                with lock:
-                    _append(s3_rows, line)
-                    counts["s3_files"] += 1
+            now = datetime.now(timezone.utc)
+            # Only the current + previous hour's partitions can possibly have
+            # new files. Listing the whole bucket's "sensor-readings/" prefix
+            # caps at 1000 keys per call with no pagination here — after enough
+            # history accumulates, that page is permanently stuck on the
+            # oldest surviving data and never reaches today's files at all.
+            prefixes = {_hour_prefix(now), _hour_prefix(now - timedelta(hours=1))}
+            for prefix in prefixes:
+                resp = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)
+                for obj in resp.get("Contents", []):
+                    key = obj["Key"]
+                    if not key.endswith(".parquet") or key in known_s3_keys:
+                        continue
+                    known_s3_keys.add(key)
+                    size_kb = round(obj["Size"] / 1024, 1)
+                    short_key = "/".join(key.split("/")[-4:])
+                    line = f"[dim]{_ts()}[/]  [bold yellow]new file[/]\n{short_key}\n{size_kb} KB"
+                    with lock:
+                        _append(s3_rows, line)
+                        counts["s3_files"] += 1
         except Exception as e:
             with lock:
                 _append(s3_rows, f"[red]error: {e}[/]")
