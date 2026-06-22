@@ -2,7 +2,12 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, call, patch
 
-from sensor_pipeline.consumer import _flush, _write_success_marker, _partition_prefix
+from sensor_pipeline.consumer import (
+    _flush,
+    _write_success_marker,
+    _partition_prefix,
+    backfill_missing_success_markers,
+)
 
 
 def _make_reading(sensor_id: int = 1) -> dict:
@@ -69,3 +74,36 @@ class TestFlushWithHour:
         s3 = MagicMock()
         _flush([], s3)
         s3.put_object.assert_not_called()
+
+
+class TestBackfillMissingSuccessMarkers:
+    def test_writes_marker_when_data_exists_but_no_success(self):
+        s3 = MagicMock()
+        # first call (checking for _SUCCESS) -> not found; second call (checking for any data) -> found
+        s3.list_objects_v2.side_effect = lambda **kwargs: (
+            {"KeyCount": 0} if kwargs["Prefix"].endswith("_SUCCESS") else {"KeyCount": 1}
+        )
+        backfill_missing_success_markers(s3, lookback_hours=2)
+        assert s3.put_object.call_count == 2  # one per lookback hour, both missing markers
+
+    def test_skips_hour_when_marker_already_exists(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"KeyCount": 1}  # _SUCCESS check always finds something
+        backfill_missing_success_markers(s3, lookback_hours=2)
+        s3.put_object.assert_not_called()
+
+    def test_skips_hour_with_no_data_at_all(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.return_value = {"KeyCount": 0}  # nothing found for any prefix
+        backfill_missing_success_markers(s3, lookback_hours=2)
+        s3.put_object.assert_not_called()
+
+    def test_never_touches_current_hour(self):
+        s3 = MagicMock()
+        s3.list_objects_v2.side_effect = lambda **kwargs: (
+            {"KeyCount": 0} if kwargs["Prefix"].endswith("_SUCCESS") else {"KeyCount": 1}
+        )
+        backfill_missing_success_markers(s3, lookback_hours=3)
+        current_hour_str = f"hour={datetime.now(timezone.utc).hour:02d}"
+        written_keys = [c[1]["Key"] for c in s3.put_object.call_args_list]
+        assert all(current_hour_str not in key for key in written_keys)

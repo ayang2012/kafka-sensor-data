@@ -4,7 +4,7 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import boto3
 import pyarrow as pa
@@ -21,6 +21,7 @@ S3_PREFIX = os.getenv("S3_PREFIX", "sensor-readings")
 S3_ENDPOINT = os.getenv("S3_ENDPOINT_URL")
 FLUSH_INTERVAL_S = int(os.getenv("FLUSH_INTERVAL_SECONDS", "60"))
 FLUSH_BATCH_SIZE = int(os.getenv("FLUSH_BATCH_SIZE", "500"))
+SUCCESS_BACKFILL_LOOKBACK_HOURS = int(os.getenv("SUCCESS_BACKFILL_LOOKBACK_HOURS", "48"))
 
 SCHEMA = pa.schema([
     pa.field("reading_id", pa.string()),
@@ -54,6 +55,39 @@ def _write_success_marker(dt: datetime, s3) -> None:
     key = f"{_partition_prefix(dt)}/_SUCCESS"
     s3.put_object(Bucket=S3_BUCKET, Key=key, Body=dt.isoformat().encode())
     logger.info("Wrote _SUCCESS marker → s3://%s/%s", S3_BUCKET, key)
+
+
+def backfill_missing_success_markers(s3, lookback_hours: int = SUCCESS_BACKFILL_LOOKBACK_HOURS) -> None:
+    """
+    The consumer's hour-rollover detection only fires while a process is
+    alive to observe the transition. A restart that crosses an hour
+    boundary (e.g. a crash + relaunch mid-hour-change) permanently skips
+    that boundary's _SUCCESS marker unless something backfills it.
+
+    On startup, scan the last `lookback_hours` of past (fully-closed) hour
+    partitions for ones that have data but no marker, and write it. The
+    current wall-clock hour is never touched here — it's still open and
+    will get its own marker naturally on the next rollover.
+    """
+    now = datetime.now(timezone.utc)
+    for i in range(1, lookback_hours + 1):
+        hour_dt = now - timedelta(hours=i)
+        prefix = _partition_prefix(hour_dt)
+
+        success_check = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=f"{prefix}/_SUCCESS", MaxKeys=1)
+        if success_check.get("KeyCount", 0) > 0:
+            continue  # marker already exists
+
+        data_check = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=f"{prefix}/", MaxKeys=1)
+        if data_check.get("KeyCount", 0) == 0:
+            continue  # no data landed for this hour at all — nothing to mark
+
+        logger.warning(
+            "Backfilling missing _SUCCESS marker for closed partition %s "
+            "(found data but no completion marker, likely from a restart "
+            "that crossed an hour boundary)", prefix,
+        )
+        _write_success_marker(hour_dt, s3)
 
 
 def _flush(buffer: list[dict], s3, flush_hour: datetime | None = None) -> int:
@@ -92,6 +126,8 @@ def _flush(buffer: list[dict], s3, flush_hour: datetime | None = None) -> int:
 
 def run():
     s3 = _s3_client()
+    backfill_missing_success_markers(s3)
+
     consumer = Consumer({
         "bootstrap.servers": KAFKA_BOOTSTRAP,
         "group.id": KAFKA_GROUP_ID,
