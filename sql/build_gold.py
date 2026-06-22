@@ -65,9 +65,17 @@ def alert_unregistered(sf_conn, pg_conn):
         print("No unregistered sensors found in silver")
         return
 
-    print(f"Found {len(rows)} unregistered sensor(s) in silver — logging to alert_log")
+    print(f"Found {len(rows)} unregistered sensor(s) in silver — checking alert_log")
+    logged = 0
     with pg_conn.cursor() as cur:
         for sensor_id, country, lat, lon, sensor_type in rows:
+            cur.execute(
+                "SELECT 1 FROM alert_log WHERE sensor_id = %s AND alert_type = %s",
+                (sensor_id, "unregistered_device"),
+            )
+            if cur.fetchone():
+                continue  # one row per sensor, ever — already logged
+
             payload = {
                 "sensor_id": sensor_id,
                 "country": country,
@@ -80,12 +88,12 @@ def alert_unregistered(sf_conn, pg_conn):
                 """
                 INSERT INTO alert_log (sensor_id, alert_type, payload)
                 VALUES (%s, %s, %s)
-                ON CONFLICT DO NOTHING
                 """,
                 (sensor_id, "unregistered_device", json.dumps(payload)),
             )
+            logged += 1
     pg_conn.commit()
-    print(f"Logged {len(rows)} unregistered device alert(s)")
+    print(f"Logged {logged} new unregistered device alert(s)")
 
 
 def main():

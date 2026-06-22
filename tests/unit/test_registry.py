@@ -2,7 +2,7 @@ import json
 import pytest
 from unittest.mock import MagicMock, call
 
-from sensor_pipeline.registry import get_customer, log_unregistered
+from sensor_pipeline.registry import get_customer, log_unregistered, log_pressure_alert
 
 
 def _make_conn(fetchone_result=None):
@@ -35,17 +35,47 @@ class TestGetCustomer:
 
 
 class TestLogUnregistered:
-    def test_inserts_alert_log_row(self):
-        conn, cur = _make_conn()
+    def test_inserts_alert_log_row_when_not_already_logged(self):
+        conn, cur = _make_conn(fetchone_result=None)  # no existing row
         payload = {"sensor_id": 99, "country": "XX"}
         log_unregistered(99, payload, conn)
-        cur.execute.assert_called_once()
+        # first execute = dedup check, second = insert
+        assert cur.execute.call_count == 2
+        insert_args = cur.execute.call_args_list[1][0]
+        assert insert_args[1][0] == 99
+        assert insert_args[1][1] == "unregistered_device"
+        assert json.loads(insert_args[1][2]) == payload
+
+    def test_skips_insert_when_already_logged(self):
+        conn, cur = _make_conn(fetchone_result=(1,))  # existing row found
+        log_unregistered(99, {}, conn)
+        assert cur.execute.call_count == 1  # only the dedup check, no insert
+        conn.commit.assert_not_called()
+
+    def test_commits_after_insert(self):
+        conn, cur = _make_conn(fetchone_result=None)
+        log_unregistered(99, {}, conn)
+        conn.commit.assert_called_once()
+
+
+class TestLogPressureAlert:
+    def test_inserts_with_reading_id(self):
+        conn, cur = _make_conn()
+        payload = {"pressure": 150000.0, "customer_name": "AirWatch EU North"}
+        log_pressure_alert(42, "reading-abc", payload, conn)
         args = cur.execute.call_args[0]
-        assert args[1][0] == 99
-        assert args[1][1] == "unregistered_device"
-        assert json.loads(args[1][2]) == payload
+        assert args[1][0] == 42
+        assert args[1][1] == "reading-abc"
+        assert args[1][2] == "pressure_threshold_exceeded"
+        assert json.loads(args[1][3]) == payload
+
+    def test_always_inserts_no_dedup_check(self):
+        conn, cur = _make_conn()
+        log_pressure_alert(42, "reading-1", {}, conn)
+        log_pressure_alert(42, "reading-2", {}, conn)
+        assert cur.execute.call_count == 2  # one insert each, no dedup lookups
 
     def test_commits_after_insert(self):
         conn, cur = _make_conn()
-        log_unregistered(99, {}, conn)
+        log_pressure_alert(42, "reading-abc", {}, conn)
         conn.commit.assert_called_once()

@@ -124,3 +124,20 @@ services:
       FLUSH_INTERVAL_SECONDS: "60"
       FLUSH_BATCH_SIZE: "500"
       PYTHONUNBUFFERED: "1"
+
+  alert-consumer:
+    build: .
+    command: python -m sensor_pipeline alert
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: sensor-readings
+      ALERT_CONSUMER_GROUP: alert-engine
+      PRESSURE_THRESHOLD_PA: "130000"
+      POSTGRES_DSN: postgresql://sensor:sensor@postgres:5432/sensordb
+      # SLACK_WEBHOOK_URL: set to deliver real notifications; falls back to log output
+      PYTHONUNBUFFERED: "1"

@@ -17,11 +17,23 @@ CREATE TABLE IF NOT EXISTS dim_sensors (
 CREATE TABLE IF NOT EXISTS alert_log (
     id          SERIAL PRIMARY KEY,
     sensor_id   BIGINT       NOT NULL,
+    reading_id  VARCHAR(36),
     alert_type  VARCHAR(50)  NOT NULL,
     payload     JSONB,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    UNIQUE (sensor_id, alert_type)
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
+
+-- Not a UNIQUE constraint: unregistered_device alerts are deduped in
+-- application code (one row per sensor, checked before insert), while
+-- pressure_threshold_exceeded alerts intentionally log every breach as
+-- its own row, keyed by reading_id, for a full incident timeline.
+CREATE INDEX IF NOT EXISTS idx_alert_log_sensor_type ON alert_log (sensor_id, alert_type);
+
+-- Migration for tables created before reading_id existed / before the
+-- old UNIQUE(sensor_id, alert_type) constraint was dropped in favor of
+-- application-level dedup.
+ALTER TABLE alert_log ADD COLUMN IF NOT EXISTS reading_id VARCHAR(36);
+ALTER TABLE alert_log DROP CONSTRAINT IF EXISTS alert_log_sensor_id_alert_type_key;
 
 INSERT INTO customers (customer_name, region) VALUES
     ('AirWatch EU North',    'Europe'),
