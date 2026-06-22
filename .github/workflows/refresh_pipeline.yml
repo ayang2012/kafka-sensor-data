@@ -1,16 +1,17 @@
 name: Refresh Pipeline
 
-# Runs hourly. Also triggerable manually from the Actions tab.
-# Rebuilds silver from bronze, then all three gold tables.
+# SUPERSEDED by the Airflow DAG (airflow/dags/sensor_refresh.py) as of the
+# Airflow + dbt rollout. That DAG does the same job with partition-dependency
+# awareness (waits for bronze's hourly _SUCCESS marker) and dbt's incremental
+# models, instead of this workflow's blind hourly cron + full-rebuild scripts.
 #
-# NOTE: At larger production scale this would be replaced by Airflow,
-# which provides richer DAG visibility, retry policies, SLA monitoring,
-# and the ability to fan out gold table builds in parallel. GitHub Actions
-# is used here as a lightweight orchestrator suitable for early-stage pipelines.
+# Running both on the same schedule against the same Snowflake tables is a
+# race condition, not redundancy — confirmed happening live on 2026-06-22
+# when this workflow and the Airflow DAG both ran dbt-equivalent refreshes
+# within minutes of each other. The cron trigger is removed; this stays as
+# a manual-only emergency fallback if the Airflow stack is ever down.
 on:
-  schedule:
-    - cron: "0 * * * *"  # every hour
-  workflow_dispatch:      # manual trigger from Actions tab
+  workflow_dispatch:
 
 jobs:
   refresh:
