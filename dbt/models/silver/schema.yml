@@ -1,0 +1,52 @@
+version: 2
+
+models:
+  - name: sensor_readings
+    description: "Cleaned, typed, deduplicated sensor readings — silver layer"
+    columns:
+      - name: reading_id
+        description: "Unique per emission"
+        tests:
+          - unique
+          - not_null
+      - name: sensor_id
+        tests:
+          - not_null
+      - name: ingested_at
+        tests:
+          - not_null
+      - name: sensor_type
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - "SDS011"
+                - "DHT22"
+                - "BME280"
+                - "BMP280"
+                - "SPS30"
+                - "SHT31"
+                - "SHT30"
+                - "PMS5003"
+                - "PMS7003"
+                - "PMS1003"
+                - "SDS021"
+                - "HTU21D"
+                - "DS18B20"
+                - "BMP180"
+                - "SEN5x"
+                - "Radiation Si22G"
+                - "Radiation SBM-20"
+                - "DNMS (Laerm)"
+
+  - name: rejected_readings
+    description: "Bronze rows excluded from silver due to data quality issues — audit log"
+    columns:
+      - name: rejection_reason
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                - "null_reading_id"
+                - "unparseable_ingested_at"
+                - "invalid_sensor_type"

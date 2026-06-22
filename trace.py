@@ -84,21 +84,37 @@ def run_mqtt_watcher():
 
 
 def run_kafka_watcher():
-    consumer = Consumer({
-        "bootstrap.servers": KAFKA_BOOTSTRAP,
-        "group.id": KAFKA_GROUP,
-        "auto.offset.reset": "latest",
-        "enable.auto.commit": False,
-    })
+    try:
+        consumer = Consumer({
+            "bootstrap.servers": KAFKA_BOOTSTRAP,
+            "group.id": KAFKA_GROUP,
+            "auto.offset.reset": "latest",
+            "enable.auto.commit": False,
+            "logger": None,
+        })
+    except Exception as e:
+        with lock:
+            _append(kafka_rows, f"[red]init error: {e}[/]")
+        return
+
     consumer.subscribe([KAFKA_TOPIC])
+    with lock:
+        _append(kafka_rows, f"[dim]subscribed to {KAFKA_TOPIC}...[/]")
+
     try:
         while True:
-            msg = consumer.poll(timeout=0.5)
-            if msg is None or msg.error():
+            msg = consumer.poll(timeout=1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                with lock:
+                    _append(kafka_rows, f"[red]kafka error: {msg.error()}[/]")
                 continue
             try:
                 p = json.loads(msg.value().decode())
-            except Exception:
+            except Exception as e:
+                with lock:
+                    _append(kafka_rows, f"[red]decode error: {e}[/]")
                 continue
             rid = _short(p.get("reading_id", ""))
             sid = p.get("sensor_id", "?")

@@ -46,6 +46,22 @@ services:
       timeout: 5s
       retries: 10
 
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sensor
+      POSTGRES_PASSWORD: sensor
+      POSTGRES_DB: sensordb
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sensor -d sensordb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   bootstrap:
     build: .
     command: python -m sensor_pipeline bootstrap
@@ -77,11 +93,14 @@ services:
         condition: service_started
       kafka:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       MQTT_HOST: mosquitto
       MQTT_PORT: "1883"
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: sensor-readings
+      POSTGRES_DSN: postgresql://sensor:sensor@postgres:5432/sensordb
       PYTHONUNBUFFERED: "1"
 
   consumer:

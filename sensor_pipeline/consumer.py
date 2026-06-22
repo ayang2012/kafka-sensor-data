@@ -18,7 +18,7 @@ KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "sensor-readings")
 KAFKA_GROUP_ID = os.getenv("KAFKA_CONSUMER_GROUP", "sensor-consumer-group")
 S3_BUCKET = os.getenv("S3_BUCKET", "sensor-readings-bronze")
 S3_PREFIX = os.getenv("S3_PREFIX", "sensor-readings")
-S3_ENDPOINT = os.getenv("S3_ENDPOINT_URL")  # set for LocalStack
+S3_ENDPOINT = os.getenv("S3_ENDPOINT_URL")
 FLUSH_INTERVAL_S = int(os.getenv("FLUSH_INTERVAL_SECONDS", "60"))
 FLUSH_BATCH_SIZE = int(os.getenv("FLUSH_BATCH_SIZE", "500"))
 
@@ -30,7 +30,7 @@ SCHEMA = pa.schema([
     pa.field("latitude", pa.float64()),
     pa.field("longitude", pa.float64()),
     pa.field("country", pa.string()),
-    pa.field("values", pa.string()),  # JSON string; cast in silver dbt model
+    pa.field("values", pa.string()),
 ])
 
 
@@ -41,7 +41,22 @@ def _s3_client():
     return boto3.client("s3", **kwargs)
 
 
-def _flush(buffer: list[dict], s3) -> int:
+def _partition_prefix(dt: datetime) -> str:
+    return (
+        f"{S3_PREFIX}/"
+        f"year={dt.year}/month={dt.month:02d}/"
+        f"day={dt.day:02d}/hour={dt.hour:02d}"
+    )
+
+
+def _write_success_marker(dt: datetime, s3) -> None:
+    """Write _SUCCESS sentinel to signal that the hour partition is complete."""
+    key = f"{_partition_prefix(dt)}/_SUCCESS"
+    s3.put_object(Bucket=S3_BUCKET, Key=key, Body=dt.isoformat().encode())
+    logger.info("Wrote _SUCCESS marker → s3://%s/%s", S3_BUCKET, key)
+
+
+def _flush(buffer: list[dict], s3, flush_hour: datetime | None = None) -> int:
     if not buffer:
         return 0
 
@@ -68,13 +83,8 @@ def _flush(buffer: list[dict], s3) -> int:
     pq.write_table(table, buf, compression="snappy")
     buf.seek(0)
 
-    now = datetime.now(timezone.utc)
-    key = (
-        f"{S3_PREFIX}/"
-        f"year={now.year}/month={now.month:02d}/"
-        f"day={now.day:02d}/hour={now.hour:02d}/"
-        f"{uuid.uuid4()}.parquet"
-    )
+    now = flush_hour or datetime.now(timezone.utc)
+    key = f"{_partition_prefix(now)}/{uuid.uuid4()}.parquet"
     s3.put_object(Bucket=S3_BUCKET, Key=key, Body=buf.getvalue())
     logger.info("Flushed %d rows → s3://%s/%s", len(rows), S3_BUCKET, key)
     return len(rows)
@@ -93,6 +103,7 @@ def run():
 
     buffer: list[dict] = []
     last_flush = time.time()
+    current_hour = datetime.now(timezone.utc).hour
 
     try:
         while True:
@@ -103,14 +114,28 @@ def run():
                 record = json.loads(msg.value().decode())
                 buffer.append(record)
 
+            now = datetime.now(timezone.utc)
+            hour_rolled = now.hour != current_hour
+
             should_flush = (
                 len(buffer) >= FLUSH_BATCH_SIZE
                 or (buffer and time.time() - last_flush >= FLUSH_INTERVAL_S)
+                or (buffer and hour_rolled)
             )
+
             if should_flush:
-                _flush(buffer, s3)
+                # flush buffer into the hour it was collected in
+                flush_dt = now.replace(hour=current_hour) if hour_rolled else now
+                _flush(buffer, s3, flush_hour=flush_dt)
                 buffer = []
                 last_flush = time.time()
+
+                if hour_rolled:
+                    # previous hour is complete — write sentinel for Airflow sensor
+                    closing_hour = now.replace(hour=current_hour)
+                    _write_success_marker(closing_hour, s3)
+                    current_hour = now.hour
+
     finally:
         if buffer:
             _flush(buffer, s3)

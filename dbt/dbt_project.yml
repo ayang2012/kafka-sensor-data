@@ -1,0 +1,19 @@
+name: sensor_pipeline
+version: "1.0.0"
+config-version: 2
+
+profile: sensor_pipeline
+
+model-paths: ["models"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  sensor_pipeline:
+    silver:
+      +schema: SILVER
+      +materialized: incremental
+    gold:
+      +schema: GOLD
+      +materialized: incremental
