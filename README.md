@@ -25,7 +25,8 @@ A production-style IoT data pipeline that ingests real-time air quality sensor r
      ▼  Kafka consume
 [consumer.py]
      │  buffers messages, flushes every 60s or 500 messages
-     │  deduplicates on reading_id within each batch
+     │  no dedup here — bronze stays the immutable raw log, including
+     │  any Kafka redeliveries; dbt's silver model dedupes on reading_id
      │  writes an S3 _SUCCESS marker when an hour partition closes
      ▼  Parquet (Snappy) → S3
 [S3 Bronze Layer]

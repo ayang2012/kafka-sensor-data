@@ -81,9 +81,20 @@ class TestConsumerToS3:
         required = {"reading_id", "sensor_id", "ingested_at", "latitude", "longitude", "country", "values"}
         assert required.issubset(set(table.schema.names))
 
-    def test_reading_ids_unique_within_file(self, s3):
-        readings = [_make_reading(i) for i in range(10)]
-        _flush(readings, s3)
+    def test_preserves_duplicate_reading_ids(self, s3):
+        # Bronze is the immutable raw log — it must preserve whatever Kafka
+        # actually delivered, including redeliveries from at-least-once
+        # semantics (e.g. a crash between processing and offset commit).
+        # Dedup is dbt silver's job (QUALIFY ROW_NUMBER PARTITION BY
+        # reading_id), since only silver can see across every flush batch
+        # and file, not just whatever's in one in-memory buffer.
+        rid = str(uuid.uuid4())
+        readings = [
+            {**_make_reading(1), "reading_id": rid},
+            {**_make_reading(2), "reading_id": rid},  # redelivered duplicate
+        ]
+        count = _flush(readings, s3)
+        assert count == 2, "Bronze should not drop duplicate reading_ids"
 
         resp = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix=S3_PREFIX)
         keys = sorted([o["Key"] for o in resp.get("Contents", []) if o["Key"].endswith(".parquet")])
@@ -91,16 +102,7 @@ class TestConsumerToS3:
         table = pq.read_table(io.BytesIO(obj["Body"].read()))
 
         ids = table.column("reading_id").to_pylist()
-        assert len(ids) == len(set(ids)), "Duplicate reading_ids in Parquet file"
-
-    def test_deduplicates_within_batch(self, s3):
-        rid = str(uuid.uuid4())
-        readings = [
-            {**_make_reading(1), "reading_id": rid},
-            {**_make_reading(2), "reading_id": rid},  # duplicate
-        ]
-        count = _flush(readings, s3)
-        assert count == 1, "Duplicate reading_id should be dropped"
+        assert ids.count(rid) == 2, "Both copies of the duplicate reading_id should be present in bronze"
 
     def test_s3_key_has_hive_partitioning(self, s3):
         _flush([_make_reading(1)], s3)

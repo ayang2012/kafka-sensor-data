@@ -95,12 +95,13 @@ def _flush(buffer: list[dict], s3, flush_hour: datetime | None = None) -> int:
         return 0
 
     rows = []
-    seen_ids = set()
+    # No dedup here — bronze is the immutable raw log, including any
+    # duplicate deliveries Kafka's at-least-once semantics produce.
+    # dbt's silver model (QUALIFY ROW_NUMBER() PARTITION BY reading_id)
+    # is the single place dedup happens, since it can see across every
+    # flush batch and file, not just whatever's in this one buffer.
     for record in buffer:
         rid = record.get("reading_id")
-        if rid in seen_ids:
-            continue
-        seen_ids.add(rid)
         rows.append({
             "reading_id": rid,
             "sensor_id": int(record.get("sensor_id", 0)),
