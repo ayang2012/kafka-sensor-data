@@ -420,7 +420,7 @@ const doc = new Document({
         ["Bronze", "Raw Parquet files on S3. External table in Snowflake. Source of truth — never modified. All sensor types mixed. Full JSON row stored in VALUE column plus extracted columns."],
         ["Silver", "Native Snowflake table. Typed columns (pm25, pm10, temperature, humidity, pressure). Deduped on reading_id. JSON sensor_values unpacked via TRY_PARSE_JSON. TRY_TO_TIMESTAMP_TZ handles malformed ingested_at."],
         ["Silver Dims", "DIM_CUSTOMERS and DIM_SENSORS synced from Postgres. Enables enrichment joins on fact data."],
-        ["Gold", "Pre-aggregated analytics tables. Designed for BI tools and dashboards. No heavy computation at query time. Examples: pm25_by_country_hour, temperature_by_region_day. (In progress)"],
+        ["Gold", "Pre-aggregated analytics tables, built via dbt incremental models. Designed for BI tools and dashboards. No heavy computation at query time: pm25_by_country_hour, temperature_by_region_day, sensor_activity_by_customer."],
       ]),
       spacer(),
 
@@ -481,6 +481,7 @@ const doc = new Document({
       bullet("--integration flag guard means unit tests run fast on every push; integration tests only run on PRs"),
       bullet("Mosquitto started as a manual docker run step in CI (after checkout) because service containers start before checkout, so the config file mount would fail"),
       bullet("Kafka service uses zookeeper:2181 (not localhost:2181) in CI because service containers communicate via network aliases"),
+      bullet("Postgres added as a CI service after producer.py started requiring a registry connection at startup — the integration test job didn't have Postgres available, so the producer crashed before subscribing to MQTT, silently failing test_message_flows_mqtt_to_kafka with a 15s timeout rather than a clear connection error"),
       spacer(),
 
       // ─── 7. LESSONS LEARNED ──────────────────────────────────────────────────
@@ -493,15 +494,92 @@ const doc = new Document({
       bullet("External table SELECT speed", "Full S3 scan + QUALIFY window function = 6+ minutes for SELECT * LIMIT 10. Solution: materialize silver as a native table."),
       bullet("Sync script performance", "999 individual MERGE statements to Snowflake = ~10 minutes. Fixed to bulk insert into temp table + single MERGE = seconds."),
       bullet("TRY_TO_TIMESTAMP_TZ vs TO_TIMESTAMP_TZ", "One row had an empty string ingested_at, causing TO_TIMESTAMP_TZ to fail the entire CREATE TABLE. TRY_ variant returns NULL instead."),
+      bullet("Incremental models don't retroactively fix old rows", "After adding row-filtering logic to the silver dbt model (excluding null reading_id, unparseable timestamps, junk sensor_type), dbt tests still failed. The filter only applies to newly-scanned bronze rows in an incremental run — bad rows already materialized from a prior full build stayed put until a dbt run --full-refresh was run explicitly."),
+      bullet("uv installing into the wrong environment silently", "An attempt to isolate dbt in its own virtualenv (separate from Airflow's site-packages) failed silently: uv pip install run against the venv's own uv binary, without --python or an active VIRTUAL_ENV, fell back to installing into the system Python instead. The venv existed and looked correct, but was empty. Confirmed via pip list inside the venv showing only pip/setuptools/uv with no dbt-snowflake."),
+      bullet("Airflow + dbt dependency conflicts", "dbt-snowflake's pinned snowflake-connector-python requires an older keyring than Airflow's official constraints file allows, making a single combined pip install unresolvable. Splitting into two separate pip install calls (one constrained to Airflow's official constraints file, one unconstrained for dbt-snowflake) sidesteps the conflict without needing true filesystem isolation."),
+      bullet("uv vs pip install speed", "Installing dbt-snowflake + Airflow providers via plain pip inside the Airflow Docker image hung for 2000+ seconds on dependency backtracking. Switching to uv (10-100x faster resolver) cut this to under a minute."),
+      bullet("Airflow catchup created phantom failed runs", "Even with catchup=False, Airflow auto-triggered a run for the most recent missed schedule interval before catching up to 'now', producing failed DAG runs for hours with no corresponding _SUCCESS marker. Expected behavior, but easy to mistake for a bug on first sight."),
+      bullet("Empty-body S3 PutObject failing against LocalStack", "Writing a zero-byte _SUCCESS marker via boto3 against LocalStack raised botocore.exceptions.ClientError: 'NoneType' object has no attribute 'to_bytes' — a checksum-trailer incompatibility between newer botocore and LocalStack's S3 implementation. Fixed by writing a non-empty body (an ISO timestamp) instead of b''."),
+      bullet("Multiple consumers in the same Kafka consumer group", "Restarting consume with corrected S3 env vars while the original (misconfigured) process was still running meant both shared the consumer group ID, causing Kafka to split partitions between them and scatter data across two destinations unpredictably. Always confirm the old process has actually exited before starting a replacement."),
       spacer(),
 
-      // ─── 8. NEXT STEPS ───────────────────────────────────────────────────────
-      h1("8. Next Steps"),
-      bullet("Gold layer", "Build pre-aggregated Snowflake tables: pm25_by_country_hour, temperature_by_region_day, sensor_activity by customer"),
+      // ─── 8. ORCHESTRATION: AIRFLOW + DBT ─────────────────────────────────────
+      h1("8. Orchestration: Airflow + dbt"),
+      p("Manually running CREATE TABLE statements and Python refresh scripts doesn't scale, and doesn't answer 'when does silver/gold actually update.' This section covers the move to scheduled, incremental, dependency-aware refresh."),
+      spacer(),
+
+      h2("8.1  Why Not Just Cron + Full Rebuilds"),
+      p("The first refresh approach was a full CREATE OR REPLACE TABLE on every run, on a fixed schedule. Two problems surfaced:"),
+      bullet("Full rebuilds re-scan the entire bronze external table every run, even though only the latest hour's data is new — wasteful and slow as bronze grows"),
+      bullet("A fixed cron has no concept of whether the data it depends on is actually ready. Following Meta's Dataswarm pattern (don't run today's job until yesterday's partition is marked complete), the pipeline needed partition-level dependency awareness, not just a timer"),
+      spacer(),
+
+      h2("8.2  The _SUCCESS Marker Pattern"),
+      p("consumer.py now detects when the wall-clock hour rolls over, flushes any remaining buffered messages into the closing hour's partition, and writes an empty (well — non-empty, see Lessons Learned) _SUCCESS file to that hour's S3 prefix. This is the same completion-signal pattern used in Hadoop/Hive: downstream consumers wait for _SUCCESS rather than guessing when an hour's files have all landed."),
+      spacer(),
+      decision_box(
+        "Consumer-emitted _SUCCESS marker, not a fixed offset or file-count heuristic",
+        "Waiting for 'at least one file' in an hour partition would trigger silver/gold refresh on a small fraction of that hour's data. Waiting for 'no new files in N minutes' adds latency and is still a heuristic. Only the consumer itself knows definitively when it has stopped writing to a given hour.",
+        "Couples the orchestration layer's correctness to the consumer's hour-rollover logic being correct. If the consumer crashes mid-hour without flushing, no _SUCCESS marker is written and Airflow's sensor times out rather than silently proceeding on incomplete data — a deliberate fail-closed tradeoff."
+      ),
+      spacer(),
+
+      h2("8.3  dbt Incremental Models"),
+      p("Silver and all three gold models use materialized='incremental' with is_incremental() watermark filters, rather than full rebuilds:"),
+      code_block([
+        "{% if is_incremental() %}",
+        "WHERE TRY_TO_TIMESTAMP_TZ(ingested_at) > (",
+        "    SELECT MAX(ingested_at) FROM {{ this }}",
+        ")",
+        "{% endif %}",
+      ]),
+      p("Gold models incrementally MERGE on their own grain (hour+country for pm25, day+region+sensor_type for temperature, etc.), enriching via LEFT JOIN to dim_sensors/dim_customers so unregistered sensors fall back to 'Unknown' rather than being dropped."),
+      spacer(),
+
+      h2("8.4  Data Quality: Filtering and Auditing, Not Just Testing"),
+      p("dbt tests caught real malformed bronze rows: a null reading_id, an unparseable ingested_at, and rows with sensor_type of '' or 'test'. Rather than only alerting on these via failing tests, silver.sensor_readings now filters them out at the source, and a new silver.rejected_readings table logs exactly what was excluded and why."),
+      spacer(),
+      decision_box(
+        "Filter bad rows into an audit table, not just fail-and-block",
+        "A failing dbt test blocks the whole pipeline run on every subsequent execution until someone manually intervenes. Filtering bad rows out of silver while logging them to rejected_readings keeps the pipeline flowing while still making every excluded row visible and explainable — nothing silently disappears between bronze and silver.",
+        "Required discovering that, separately, 14 of the '16 unexpected sensor types' flagged by the original accepted_values test were legitimate real-world Sensor.Community sensors (SPS30, PMS5003, radiation/noise sensors, etc.) that simply hadn't been anticipated — only 3 rows were genuinely bad data. The accepted_values list was expanded accordingly rather than treating all 16 as errors."
+      ),
+      spacer(),
+
+      h2("8.5  Airflow DAG Structure"),
+      code_block([
+        "wait_for_bronze_partition  (S3KeySensor, mode='reschedule')",
+        "        |",
+        "        v",
+        "dbt_run_silver  (silver.sensor_readings + silver.rejected_readings)",
+        "        |",
+        "        +--> dbt_run_gold_pm25          (parallel)",
+        "        +--> dbt_run_gold_temperature   (parallel)",
+        "        +--> dbt_run_gold_activity      (parallel)",
+        "        |",
+        "        v",
+        "dbt_test  (16 data quality checks)",
+      ]),
+      p("mode='reschedule' on the sensor releases the Airflow worker slot while waiting, rather than holding it for up to an hour. The DAG is scheduled hourly but is not the production end-state — see Next Steps."),
+      spacer(),
+
+      h2("8.6  GitHub Actions as an Interim Path"),
+      p("Two GitHub Actions workflows (refresh_pipeline.yml, sync_dims.yml) provide a lighter-weight orchestration option that doesn't require a self-hosted Airflow stack, useful for environments without that infrastructure available yet."),
+      spacer(),
+      decision_box(
+        "GitHub Actions now, Airflow as the real target, dbt either way",
+        "GitHub Actions is a CI tool repurposed as a scheduler — it has no native concept of a data partition, a sensor, or a DAG with branching dependencies. It works for simple linear scheduled jobs but required workarounds (a fixed sleep, no partition awareness) for anything more sophisticated.",
+        "GitHub Actions cannot reach a local-only Postgres instance, so sync_dims.yml is a manual-trigger-only workflow rather than scheduled, until Postgres is hosted somewhere network-accessible."
+      ),
+      spacer(),
+
+      // ─── 9. NEXT STEPS ───────────────────────────────────────────────────────
+      h1("9. Next Steps"),
       bullet("Alert consumer", "Separate Kafka consumer group reading sensor-readings topic in real-time; checks pressure > 130,000 Pa; writes to alert_log with customer context"),
-      bullet("CI updates", "Add Postgres service to ci.yml; add seed step; add integration tests for registry lookup and alert_log writes"),
-      bullet("dbt integration", "Replace manual CREATE TABLE silver with dbt models for version-controlled, testable, scheduled transformations"),
-      bullet("Snowflake dim enrichment join", "Build gold view joining fact_sensor_readings with dim_sensors and dim_customers for fully enriched analytics"),
+      bullet("Live validation of the _SUCCESS marker", "So far only validated via manually-written _SUCCESS markers. Needs a full live run of the Kafka pipeline across a real hour boundary to confirm consumer.py's automatic rollover detection fires correctly without manual intervention"),
+      bullet("Host Postgres somewhere network-accessible", "Unblocks scheduling sync_dims as an automated job (Railway, Supabase, RDS) rather than manual-trigger-only"),
+      bullet("Production-grade Airflow deployment", "Current Airflow stack is self-hosted via docker-compose for demonstration. Production target is a managed service (Astronomer, MWAA, Cloud Composer) with proper secrets management, alerting, and high availability"),
+      bullet("Partition-aware sensing beyond S3KeySensor", "Current sensor checks for a single file's existence. A more Dataswarm-like dependency model would track partition completeness across multiple upstream tables, not just one S3 key"),
       spacer(),
     ],
   }],
