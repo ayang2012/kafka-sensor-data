@@ -1,0 +1,33 @@
+version: 2
+
+sources:
+  - name: bronze
+    database: SENSOR_DATA
+    schema: BRONZE
+    tables:
+      - name: sensor_readings
+        description: "Raw sensor readings from S3 external table"
+        columns:
+          - name: reading_id
+            description: "UUID per emission — dedup key"
+          - name: sensor_id
+            description: "Sensor.Community sensor ID"
+          - name: sensor_type
+            description: "e.g. SDS011, DHT22, BME280, BMP280"
+          - name: ingested_at
+            description: "ISO 8601 emission timestamp"
+          - name: latitude
+          - name: longitude
+          - name: country
+            description: "ISO country code"
+          - name: values
+            description: "JSON string of sensor measurements"
+
+  - name: silver
+    database: SENSOR_DATA
+    schema: SILVER
+    tables:
+      - name: dim_sensors
+        description: "Device registry synced from Postgres"
+      - name: dim_customers
+        description: "Customer registry synced from Postgres"

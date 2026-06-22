@@ -5,3 +5,11 @@ __pycache__/
 dist/
 .venv/
 venv/
+sensor_profiles.pkl
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml
+airflow/logs/
+docs/node_modules/
+docs/package-lock.json

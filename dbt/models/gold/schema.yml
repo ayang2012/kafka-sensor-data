@@ -1,0 +1,30 @@
+version: 2
+
+models:
+  - name: pm25_by_country_hour
+    description: "Hourly PM2.5 aggregates by country and customer — gold layer"
+    columns:
+      - name: hour
+        tests: [not_null]
+      - name: country
+        tests: [not_null]
+      - name: avg_pm25
+        tests: [not_null]
+
+  - name: temperature_by_region_day
+    description: "Daily temperature/humidity aggregates by region and customer — gold layer"
+    columns:
+      - name: day
+        tests: [not_null]
+      - name: region
+        tests: [not_null]
+
+  - name: sensor_activity_by_customer
+    description: "Daily active sensor counts and reading volumes by customer — gold layer"
+    columns:
+      - name: day
+        tests: [not_null]
+      - name: customer_name
+        tests: [not_null]
+      - name: active_sensors
+        tests: [not_null]

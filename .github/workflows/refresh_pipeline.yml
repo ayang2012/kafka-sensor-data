@@ -1,0 +1,46 @@
+name: Refresh Pipeline
+
+# Runs hourly. Also triggerable manually from the Actions tab.
+# Rebuilds silver from bronze, then all three gold tables.
+#
+# NOTE: At larger production scale this would be replaced by Airflow,
+# which provides richer DAG visibility, retry policies, SLA monitoring,
+# and the ability to fan out gold table builds in parallel. GitHub Actions
+# is used here as a lightweight orchestrator suitable for early-stage pipelines.
+on:
+  schedule:
+    - cron: "0 * * * *"  # every hour
+  workflow_dispatch:      # manual trigger from Actions tab
+
+jobs:
+  refresh:
+    name: Refresh Silver + Gold
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Refresh silver table
+        run: python sql/refresh_silver.py
+        env:
+          SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+
+      - name: Build gold tables
+        run: python sql/build_gold.py
+        env:
+          SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          # POSTGRES_DSN not set here — unregistered alert step is skipped
+          # until Postgres is hosted on an accessible endpoint
